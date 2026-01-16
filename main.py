@@ -85,7 +85,7 @@ def get_major_login_token_api(open_id, access_token, platform):
         "Content-Type": "application/octet-stream",
         "X-GA": "v1 1",
         "X-Unity-Version": "2018.4.11f1",
-        "ReleaseVersion": "OB51"
+        "ReleaseVersion": "OB52"
     }
     try:
         response = requests.post(url, headers=headers, data=encrypted_data, timeout=15, verify=False)
