@@ -1,115 +1,156 @@
-import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import JSONResponse
+import requests, base64, json, urllib3
+from datetime import datetime
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import MajorLogin_res_pb2
-from datetime import datetime
-from google.protobuf.timestamp_pb2 import Timestamp
-import json, base64, traceback, warnings
 
-warnings.filterwarnings("ignore")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-app = FastAPI()
+app = FastAPI(title="RE7BAL JWT Extractor", version="2.0")
 
-# ==== نفس الكلاس الأصلي ====
+# -------------------------------------------------------------------
+# Protobuf Encoder (ORIGINAL)
+# -------------------------------------------------------------------
 class SimpleProtobuf:
     @staticmethod
     def encode_varint(value):
-        r = bytearray()
+        result = bytearray()
         while value > 0x7F:
-            r.append((value & 0x7F) | 0x80)
+            result.append((value & 0x7F) | 0x80)
             value >>= 7
-        r.append(value & 0x7F)
-        return bytes(r)
+        result.append(value & 0x7F)
+        return bytes(result)
 
     @staticmethod
-    def encode_string(f, v):
-        if isinstance(v, str):
-            v = v.encode()
-        r = bytearray()
-        r.extend(SimpleProtobuf.encode_varint((f << 3) | 2))
-        r.extend(SimpleProtobuf.encode_varint(len(v)))
-        r.extend(v)
-        return bytes(r)
+    def encode_string(field, value):
+        if isinstance(value, str):
+            value = value.encode()
+        return (
+            SimpleProtobuf.encode_varint((field << 3) | 2)
+            + SimpleProtobuf.encode_varint(len(value))
+            + value
+        )
 
     @staticmethod
-    def encode_int32(f, v):
-        r = bytearray()
-        r.extend(SimpleProtobuf.encode_varint((f << 3) | 0))
-        r.extend(SimpleProtobuf.encode_varint(v))
-        return bytes(r)
+    def encode_int(field, value):
+        return (
+            SimpleProtobuf.encode_varint((field << 3) | 0)
+            + SimpleProtobuf.encode_varint(value)
+        )
 
     @staticmethod
     def create_login_payload(open_id, access_token, platform):
         p = bytearray()
-        p.extend(SimpleProtobuf.encode_string(3, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        p.extend(SimpleProtobuf.encode_string(4, "free fire"))
-        p.extend(SimpleProtobuf.encode_int32(5, 1))
-        p.extend(SimpleProtobuf.encode_string(22, open_id))
-        p.extend(SimpleProtobuf.encode_string(23, str(platform)))
-        p.extend(SimpleProtobuf.encode_string(29, access_token))
+        p += SimpleProtobuf.encode_string(3, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        p += SimpleProtobuf.encode_string(22, open_id)
+        p += SimpleProtobuf.encode_string(23, str(platform))
+        p += SimpleProtobuf.encode_string(29, access_token)
+        p += SimpleProtobuf.encode_string(99, str(platform))
         return bytes(p)
 
-# ==== API ====
-@app.get("/access")
-def access(token: str):
+# -------------------------------------------------------------------
+# Inspect Token
+# -------------------------------------------------------------------
+def inspect_token(token: str):
+    url = f"https://100067.connect.garena.com/oauth/token/inspect?token={token}"
+    headers = {
+        "User-Agent": "GarenaMSDK/4.0.19P4",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    r = requests.get(url, headers=headers, timeout=10, verify=False)
+    data = r.json()
+
+    if "error" in data:
+        raise ValueError(data["error"])
+
+    if not data.get("open_id") or not data.get("platform"):
+        raise ValueError("Inspect failed")
+
+    return data["open_id"], data["platform"]
+
+# -------------------------------------------------------------------
+# MajorLogin (FULL)
+# -------------------------------------------------------------------
+def major_login(open_id, token, platform):
+    key = b"Yg&tc%DEuh6%Zc^8"
+    iv = b"6oyZDr22E3ychjM%"
+
+    payload = SimpleProtobuf.create_login_payload(open_id, token, platform)
+    encrypted = AES.new(key, AES.MODE_CBC, iv).encrypt(pad(payload, 16))
+
+    headers = {
+        "User-Agent": "Dalvik/2.1.0",
+        "Content-Type": "application/octet-stream",
+        "X-Unity-Version": "2018.4.11f1",
+        "ReleaseVersion": "OB52"
+    }
+
+    r = requests.post(
+        "https://loginbp.ggblueshark.com/MajorLogin",
+        headers=headers,
+        data=encrypted,
+        timeout=15,
+        verify=False
+    )
+
+    if not r.ok:
+        raise ValueError("MajorLogin HTTP error")
+
+    # ---- Try decrypt ----
+    cipher = AES.new(key, AES.MODE_CBC, iv)
     try:
-        inspect_url = f"https://100067.connect.garena.com/oauth/token/inspect?token={token}"
-        inspect_headers = {
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "close",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Host": "100067.connect.garena.com",
-            "User-Agent": "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)"
-        }
+        decrypted = unpad(cipher.decrypt(r.content), 16)
+    except Exception:
+        decrypted = r.content
 
-        inspect_data = requests.get(inspect_url, headers=inspect_headers, timeout=10).json()
+    resp = MajorLogin_res_pb2.MajorLoginRes()
+    resp.ParseFromString(decrypted)
 
-        if "error" in inspect_data:
-            raise HTTPException(status_code=400, detail=inspect_data)
+    if not resp.account_jwt:
+        raise ValueError("JWT not found")
 
-        open_id = inspect_data.get("open_id")
-        platform = inspect_data.get("platform")
+    return {
+        "account_id": resp.account_id,
+        "jwt": resp.account_jwt,
+        "key": resp.key.hex(),
+        "iv": resp.iv.hex()
+    }
 
-        key = b'Yg&tc%DEuh6%Zc^8'
-        iv = b'6oyZDr22E3ychjM%'
+# -------------------------------------------------------------------
+# API Routes
+# -------------------------------------------------------------------
+@app.get("/")
+def root():
+    return {
+        "api": "RE7BAL-JWT-EXTRACTOR",
+        "status": "online",
+        "endpoint": "/getaccby/@n5nvn/?token=ACCESS_TOKEN"
+    }
 
-        payload = SimpleProtobuf.create_login_payload(open_id, token, platform)
-        enc = AES.new(key, AES.MODE_CBC, iv).encrypt(pad(payload, 16))
+@app.get("/getaccby/@n5nvn/")
+def extract(token: str = Query(...)):
+    try:
+        open_id, platform = inspect_token(token)
+        login = major_login(open_id, token, platform)
 
-        headers = {
-            "User-Agent": "Dalvik/2.1.0 (Linux; Android)",
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip",
-            "Content-Type": "application/octet-stream",
-            "Expect": "100-continue",
-            "X-GA": "v1 1",
-            "X-Unity-Version": "2018.4.11f1",
-            "ReleaseVersion": "OB52"
-        }
-
-        r = requests.post(
-            "https://loginbp.ggblueshark.com/MajorLogin",
-            headers=headers,
-            data=enc,
-            timeout=15
-        )
-
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        dec = unpad(cipher.decrypt(r.content), 16)
-
-        msg = MajorLogin_res_pb2.MajorLoginRes()
-        msg.ParseFromString(dec)
-
-        return {
+        return JSONResponse({
+            "success": True,
             "open_id": open_id,
             "platform": platform,
-            "account_id": msg.account_id,
-            "jwt": msg.account_jwt,
-            "key": msg.key.hex(),
-            "iv": msg.iv.hex()
-        }
+            "account_id": login["account_id"],
+            "jwt": login["jwt"],
+            "aes_key": login["key"],
+            "aes_iv": login["iv"],
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(500, "Internal server error")
+
+# Vercel compatibility
+app = app
