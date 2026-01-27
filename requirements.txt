@@ -1,6 +1,6 @@
 Flask
-flask-caching
 requests
+PyJWT
 pycryptodome
 protobuf
-colorama
+urllib3

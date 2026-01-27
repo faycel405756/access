@@ -1,0 +1,40 @@
+🌐 NEW PROJECT LIVE! 🚀
+
+🎨 Free Fire Mini Lvl Up API  Released! 🔥
+@Flexbasei is back with an Ultra-Fast and Intelligent Free Fire Auto Start Bot API! Now you can automate team joining and match starting seamlessly. Perfect for boosting services, Telegram/Discord bots, and automation tools! ⚡
+
+
+🔑 Features:
+* 🔄 Smart Cycle: Automatically handles the loop of Joining ➔ Spamming Start ➔ Waiting ➔ Leaving Team.
+
+* 📡 Live Logging: Monitor bot activity directly via the API dashboard or help endpoint!
+
+* 🛡️ Secure Encryption: Implements robust AES-CBC encryption for packet security and login stability.
+
+
+🎀Easy To Host Anywhere (VPS/Heroku/Koyeb🎀
+
+
+🍂 Fixed Socket & Whisper Connection Issues 🍂
+
+
+♻️ only change URL according your server ♻️ 
+
+
+📡 Usage Endpoints:
+
+▶️ Start Bot
+ http://[YourDomain.com]/start/{team_code}
+
+⏹️ Stop Bot: 
+http://[YourDomain.com]/stop
+
+ℹ️ Help & Logs: 
+http://[YourDomain.com]/help
+
+
+💬 Example Output (Success) And json With Logs.
+
+
+Powered by : @morpheusBlackEra 💝💝
+Credit : @Flexbasei 🎀🎀
