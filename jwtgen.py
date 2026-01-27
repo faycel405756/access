@@ -1,212 +1,180 @@
-from flask import Flask, request, jsonify
-import requests, json, base64, warnings, traceback
+from flask import Flask, jsonify, request
+from flask_caching import Cache
+import requests
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
-from datetime import datetime
-import MajorLogin_res_pb2
+from Crypto.Util.Padding import pad
+import binascii
+import my_pb2
+import output_pb2
+from colorama import init
+import warnings
+from urllib3.exceptions import InsecureRequestWarning
 
-warnings.filterwarnings("ignore")
+# Disable SSL warning
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
-app = Flask(__name__)
-
-# =========================
-# AES CONFIG
-# =========================
+# Constants
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
-AES_IV  = b'6oyZDr22E3ychjM%'
+AES_IV = b'6oyZDr22E3ychjM%'
 
-# =========================
-# SimpleProtobuf (كامل)
-# =========================
-class SimpleProtobuf:
-    @staticmethod
-    def encode_varint(value):
-        r = bytearray()
-        while value > 0x7F:
-            r.append((value & 0x7F) | 0x80)
-            value >>= 7
-        r.append(value & 0x7F)
-        return bytes(r)
+# Init colorama
+init(autoreset=True)
 
-    @staticmethod
-    def encode_string(field, value):
-        if isinstance(value, str):
-            value = value.encode()
-        return (
-            SimpleProtobuf.encode_varint((field << 3) | 2) +
-            SimpleProtobuf.encode_varint(len(value)) +
-            value
-        )
+# Flask setup
+app = Flask(__name__)
+cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})
 
-    @staticmethod
-    def encode_int(field, value):
-        return (
-            SimpleProtobuf.encode_varint((field << 3) | 0) +
-            SimpleProtobuf.encode_varint(value)
-        )
 
-    @staticmethod
-    def parse(data):
-        out, i = {}, 0
-        while i < len(data):
-            tag = data[i]
-            field = tag >> 3
-            wire = tag & 7
-            i += 1
+def inspect_token(token: str):
+    url = f"https://100067.connect.garena.com/oauth/token/inspect?token={token}"
+    headers = {
+        "User-Agent": "GarenaMSDK/4.0.19P4",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
 
-            if wire == 0:
-                val, shift = 0, 0
-                while True:
-                    b = data[i]; i += 1
-                    val |= (b & 0x7F) << shift
-                    if not (b & 0x80): break
-                    shift += 7
-                out[field] = val
+    r = requests.get(url, headers=headers, timeout=10, verify=False)
+    data = r.json()
 
-            elif wire == 2:
-                ln, shift = 0, 0
-                while True:
-                    b = data[i]; i += 1
-                    ln |= (b & 0x7F) << shift
-                    if not (b & 0x80): break
-                    shift += 7
-                raw = data[i:i+ln]
-                i += ln
-                try:
-                    out[field] = raw.decode()
-                except:
-                    out[field] = raw.hex()
-            else:
-                break
-        return out
+    if "error" in data:
+        raise ValueError(data["error"])
 
-    @staticmethod
-    def create_login_payload(open_id, access_token, platform):
-        p = bytearray()
-        p.extend(SimpleProtobuf.encode_string(3, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        p.extend(SimpleProtobuf.encode_string(4, "free fire"))
-        p.extend(SimpleProtobuf.encode_int(5, 1))
-        p.extend(SimpleProtobuf.encode_string(7, "2.111.2"))
-        p.extend(SimpleProtobuf.encode_string(8, "Android OS 12 / API-31"))
-        p.extend(SimpleProtobuf.encode_string(9, "Handheld"))
-        p.extend(SimpleProtobuf.encode_string(10, "we"))
-        p.extend(SimpleProtobuf.encode_string(11, "WIFI"))
-        p.extend(SimpleProtobuf.encode_int(12, 1334))
-        p.extend(SimpleProtobuf.encode_int(13, 800))
-        p.extend(SimpleProtobuf.encode_string(14, "225"))
-        p.extend(SimpleProtobuf.encode_string(15, "ARM64 FP ASIMD AES | 4032 | 8"))
-        p.extend(SimpleProtobuf.encode_int(16, 2705))
-        p.extend(SimpleProtobuf.encode_string(17, "Adreno (TM) 610"))
-        p.extend(SimpleProtobuf.encode_string(18, "OpenGL ES 3.2"))
-        p.extend(SimpleProtobuf.encode_string(19, "Google|device"))
-        p.extend(SimpleProtobuf.encode_string(20, "154.183.6.12"))
-        p.extend(SimpleProtobuf.encode_string(21, "ar"))
-        p.extend(SimpleProtobuf.encode_string(22, open_id))
-        p.extend(SimpleProtobuf.encode_string(23, str(platform)))
-        p.extend(SimpleProtobuf.encode_string(24, "Handheld"))
-        p.extend(SimpleProtobuf.encode_string(25, "samsung SM-T505N"))
-        p.extend(SimpleProtobuf.encode_string(29, access_token))
-        p.extend(SimpleProtobuf.encode_int(30, 1))
-        p.extend(SimpleProtobuf.encode_string(41, "we"))
-        p.extend(SimpleProtobuf.encode_string(42, "WIFI"))
-        p.extend(SimpleProtobuf.encode_string(57, "e89b158e4bcf988ebd09eb83f5378e87"))
-        p.extend(SimpleProtobuf.encode_int(60, 22394))
-        p.extend(SimpleProtobuf.encode_int(61, 1424))
-        p.extend(SimpleProtobuf.encode_int(62, 3349))
-        p.extend(SimpleProtobuf.encode_int(63, 24))
-        p.extend(SimpleProtobuf.encode_int(64, 1552))
-        p.extend(SimpleProtobuf.encode_int(65, 22394))
-        p.extend(SimpleProtobuf.encode_int(66, 1552))
-        p.extend(SimpleProtobuf.encode_int(67, 22394))
-        p.extend(SimpleProtobuf.encode_int(73, 1))
-        p.extend(SimpleProtobuf.encode_string(74, "/data/app/lib/arm64"))
-        p.extend(SimpleProtobuf.encode_int(76, 2))
-        p.extend(SimpleProtobuf.encode_string(77, "apk|/base.apk"))
-        p.extend(SimpleProtobuf.encode_int(78, 2))
-        p.extend(SimpleProtobuf.encode_int(79, 2))
-        p.extend(SimpleProtobuf.encode_string(81, "64"))
-        p.extend(SimpleProtobuf.encode_string(83, "2019115296"))
-        p.extend(SimpleProtobuf.encode_int(85, 1))
-        p.extend(SimpleProtobuf.encode_string(86, "OpenGLES3"))
-        p.extend(SimpleProtobuf.encode_int(87, 16383))
-        p.extend(SimpleProtobuf.encode_int(88, 4))
-        p.extend(SimpleProtobuf.encode_string(90, "Damanhur"))
-        p.extend(SimpleProtobuf.encode_string(91, "BH"))
-        p.extend(SimpleProtobuf.encode_int(92, 31095))
-        p.extend(SimpleProtobuf.encode_string(93, "android_max"))
-        p.extend(SimpleProtobuf.encode_string(94, "KqsHTzpfADfqKnEg/KMctJLElsm8bN2M4ts0zq+ifY="))
-        p.extend(SimpleProtobuf.encode_int(97, 1))
-        p.extend(SimpleProtobuf.encode_int(98, 1))
-        p.extend(SimpleProtobuf.encode_string(99, str(platform)))
-        p.extend(SimpleProtobuf.encode_string(100, str(platform)))
-        inner = SimpleProtobuf.encode_string(8, "GAW")
-        p.extend(SimpleProtobuf.encode_string(102, inner.decode("latin1")))
-        return bytes(p)
+    if not data.get("open_id") or not data.get("platform"):
+        raise ValueError("Inspect failed")
 
-# =========================
-# JWT helper
-# =========================
-def decode_jwt(jwt):
-    try:
-        payload = jwt.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload))
-    except:
-        return None
+    return data["open_id"], data["platform"]
 
-# =========================
-# API ROUTE
-# =========================
-@app.route("/api/major_login", methods=["GET"])
-def major_login_api():
-    token = request.args.get("access_token")
+
+def encrypt_message(key, iv, plaintext):
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    padded_message = pad(plaintext, AES.block_size)
+    return cipher.encrypt(padded_message)
+
+
+def parse_response(content):
+    response_dict = {}
+    lines = content.split("\n")
+    for line in lines:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            response_dict[key.strip()] = value.strip().strip('"')
+    return response_dict
+
+
+@app.route('/token', methods=['GET'])
+@cache.cached(timeout=25200, query_string=True)
+def get_single_response():
+    token = request.args.get('token')
+
     if not token:
-        return jsonify({"error": "access_token required"}), 400
+        return jsonify({"error": "token parameter is required"}), 400
 
-    inspect = requests.get(
-        f"https://100067.connect.garena.com/oauth/token/inspect?token={token}",
-        timeout=10
-    ).json()
+    try:
+        open_id, platform = inspect_token(token)
+    except Exception as e:
+        return jsonify({
+            "status": "invalid",
+            "message": str(e),
+            "credit": "ZORO"
+        }), 400
 
-    if "error" in inspect:
-        return jsonify({"error": "invalid_token", "inspect": inspect}), 400
+    game_data = my_pb2.GameData()
+    game_data.timestamp = "2024-12-05 18:15:32"
+    game_data.game_name = "free fire"
+    game_data.game_version = 1
+    game_data.version_code = "1.108.3"
+    game_data.os_info = "Android OS 9 / API-28 (PI/rel.cjw.20220518.114133)"
+    game_data.device_type = "Handheld"
+    game_data.network_provider = "Verizon Wireless"
+    game_data.connection_type = "WIFI"
+    game_data.screen_width = 1280
+    game_data.screen_height = 960
+    game_data.dpi = "240"
+    game_data.cpu_info = "ARMv7 VFPv3 NEON VMH | 2400 | 4"
+    game_data.total_ram = 5951
+    game_data.gpu_name = "Adreno (TM) 640"
+    game_data.gpu_version = "OpenGL ES 3.0"
+    game_data.user_id = "Google|74b585a9-0268-4ad3-8f36-ef41d2e53610"
+    game_data.ip_address = "172.190.111.97"
+    game_data.language = "en"
 
-    open_id = inspect["open_id"]
-    platform = inspect["platform"]
+    game_data.open_id = open_id
+    game_data.access_token = token
+    game_data.platform_type = platform
 
-    payload = SimpleProtobuf.create_login_payload(open_id, token, platform)
-    enc = AES.new(AES_KEY, AES.MODE_CBC, AES_IV).encrypt(pad(payload, 16))
+    game_data.device_form_factor = "Handheld"
+    game_data.device_model = "Asus ASUS_I005DA"
+    game_data.field_60 = 32968
+    game_data.field_61 = 29815
+    game_data.field_62 = 2479
+    game_data.field_63 = 914
+    game_data.field_64 = 31213
+    game_data.field_65 = 32968
+    game_data.field_66 = 31213
+    game_data.field_67 = 32968
+    game_data.field_70 = 4
+    game_data.field_73 = 2
+    game_data.library_path = "/data/app/com.dts.freefireth-QPvBnTUhYWE-7DMZSOGdmA==/lib/arm"
+    game_data.field_76 = 1
+    game_data.apk_info = "5b892aaabd688e571f688053118a162b|/data/app/com.dts.freefireth-QPvBnTUhYWE-7DMZSOGdmA==/base.apk"
+    game_data.field_78 = 6
+    game_data.field_79 = 1
+    game_data.os_architecture = "32"
+    game_data.build_number = "2019117877"
+    game_data.field_85 = 1
+    game_data.graphics_backend = "OpenGLES2"
+    game_data.max_texture_units = 16383
+    game_data.rendering_api = 4
+    game_data.encoded_field_89 = "\u0017T\u0011\u0017\u0002\b\u000eUMQ\bEZ\u0003@ZK;Z\u0002\u000eV\ri[QVi\u0003\ro\t\u0007e"
+    game_data.field_92 = 9204
+    game_data.marketplace = "3rd_party"
+    game_data.encryption_key = "KqsHT2B4It60T/65PGR5PXwFxQkVjGNi+IMCK3CFBCBfrNpSUA1dZnjaT3HcYchlIFFL1ZJOg0cnulKCPGD3C3h1eFQ="
+    game_data.total_storage = 111107
+    game_data.field_97 = 1
+    game_data.field_98 = 1
+    game_data.field_99 = "4"
+    game_data.field_100 = "4"
 
-    r = requests.post(
-        "https://loginbp.ggblueshark.com/MajorLogin",
-        data=enc,
-        headers={
-            "Content-Type": "application/octet-stream",
-            "User-Agent": "Dalvik/2.1.0",
+    try:
+        serialized_data = game_data.SerializeToString()
+        encrypted_data = encrypt_message(AES_KEY, AES_IV, serialized_data)
+        edata = binascii.hexlify(encrypted_data).decode()
+
+        url = "https://loginbp.ggblueshark.com/MajorLogin"
+        headers = {
+            "Host": "loginbp.ggblueshark.com",
             "X-Unity-Version": "2018.4.11f1",
-            "ReleaseVersion": "OB51",
-        },
-        timeout=15
-    )
+            "Accept": "*/*",
+            "Authorization": "Bearer",
+            "ReleaseVersion": "OB52",
+            "X-GA": "v1 1",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": "832",
+            "User-Agent": "Free%20Fire/2019118692 CFNetwork/3826.500.111.2.2 Darwin/24.4.0",
+            "Connection": "keep-alive"
+        }
 
-    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
-    dec = unpad(cipher.decrypt(r.content), 16)
+        response = requests.post(url, data=bytes.fromhex(edata), headers=headers, verify=False)
 
-    msg = MajorLogin_res_pb2.MajorLoginRes()
-    msg.ParseFromString(dec)
+        if response.status_code == 200:
+            example_msg = output_pb2.Garena_420()
+            example_msg.ParseFromString(response.content)
+            response_dict = parse_response(str(example_msg))
+            return jsonify({
+                "status": response_dict.get("status", "N/A"),
+                "token": response_dict.get("token", "N/A")
+            })
 
-    jwt = msg.account_jwt.decode(errors="ignore")
+        return jsonify({
+            "error": f"HTTP {response.status_code} {response.reason}"
+        }), 400
 
-    return jsonify({
-        "open_id": open_id,
-        "platform": platform,
-        "account_id": msg.account_id,
-        "jwt": jwt,
-        "jwt_payload": decode_jwt(jwt),
-        "key": msg.key.hex(),
-        "iv": msg.iv.hex()
-    })
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
 
-# =========================
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
